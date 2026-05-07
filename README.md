@@ -16,6 +16,66 @@
 - **多编码**: UTF-8、Shift_JIS 等
 - **无外部依赖**: 仅 Python 标准库
 
+## AI Agent 使用
+
+**以下命令在项目根目录执行，无需 pip install。**
+
+### 公共约定
+
+- 所有子命令支持 `-e, --encoding ENC` 指定编码（默认 `utf-8`）
+- 退出码 `0` = 成功，`1` = 失败，`2` = 参数错误
+- 正常输出到 stdout，错误/警告输出到 stderr
+
+### parse — 解析 AUP2 为 JSON
+
+```
+python main.py parse <file> [-e ENC] [-o OUTPUT] [--no-pretty] [--include-records]
+python -m aviutl2_aup2_parser parse <file> [...]
+```
+
+| 选项 | 说明 |
+|---|---|
+| `file` | AUP2 文件路径 |
+| `-o OUTPUT` | 写入文件，默认 stdout |
+| `--no-pretty` | 紧凑 JSON（无缩进） |
+| `--include-records` | 包含 `_line_records`，输出格式变为 `{"data":{...},"_line_records":[...]}` |
+
+### info — 结构摘要
+
+```
+python main.py info <file> [-e ENC] [--json]
+```
+
+| 选项 | 说明 |
+|---|---|
+| `--json` | 机器可读 JSON，否则人类可读表格 |
+
+### validate — 完整性验证
+
+```
+python main.py validate <file> [-e ENC] [--quiet]
+```
+
+| 选项 | 说明 |
+|---|---|
+| `--quiet` | 不输出，仅退出码 |
+
+### convert — AUP2 ↔ JSON
+
+```
+python main.py convert <input> <output> [-e ENC]
+```
+
+根据扩展名判断方向：`.aup2` → `.json` / `.json` → `.aup2` / `.aup2` → `.aup2`（逻辑重建）。JSON → AUP2 走逻辑重建，非字节精确。
+
+### rebuild — 往返 SHA256 对比
+
+```
+python main.py rebuild <file> [-e ENC] [-o OUTPUT]
+```
+
+解析 → 重建 → 对比 SHA256。`-o` 同时写入重建文件。不匹配时退出码 1。
+
 ## 系统要求
 
 - **Python**: 3.11 或更高版本
@@ -32,6 +92,146 @@ pip install -e .
 
 或直接复制 `aup2_parser.py` 到项目中导入使用。
 
+## CLI 使用
+
+`pip install -e .` 后即可使用 `aup2` 命令。零外部依赖，仅需 Python 3.11+。
+
+### 子命令一览
+
+| 子命令 | 功能 | 典型用法 |
+|---|---|---|
+| `parse` | 解析 AUP2 为 JSON | `aup2 parse project.aup2` |
+| `info` | 查看文件结构摘要 | `aup2 info project.aup2` |
+| `validate` | 验证文件完整性 | `aup2 validate project.aup2` |
+| `convert` | AUP2 ↔ JSON 互转 | `aup2 convert in.aup2 out.json` |
+| `rebuild` | 往返重建校验 | `aup2 rebuild project.aup2` |
+
+### parse — 解析为 JSON
+
+```
+aup2 parse <file> [-e ENC] [-o OUTPUT] [--no-pretty] [--include-records]
+```
+
+| 选项 | 说明 |
+|---|---|
+| `file` | 必填，AUP2 文件路径 |
+| `-e, --encoding` | 文件编码，默认 `utf-8` |
+| `-o, --output` | 写入 JSON 到文件，默认输出到 stdout |
+| `--no-pretty` | 紧凑 JSON，不带缩进 |
+| `--include-records` | 包含 `_line_records`，用于往返状态持久化 |
+
+```bash
+# 输出到终端
+aup2 parse project.aup2
+
+# 紧凑输出，写入文件
+aup2 parse project.aup2 --no-pretty -o parsed.json
+
+# 持久化完整状态（含行记录，可后续精确重建）
+aup2 parse project.aup2 --include-records -o state.json
+```
+
+### info — 结构摘要
+
+```
+aup2 info <file> [-e ENC] [--json]
+```
+
+| 选项 | 说明 |
+|---|---|
+| `file` | 必填，AUP2 文件路径 |
+| `--json` | 输出机器可读 JSON，默认人类可读表格 |
+
+```bash
+aup2 info project.aup2
+# File:         project.aup2
+# Scenes:       17
+# Objects:      247
+# ...
+
+aup2 info project.aup2 --json
+# {"total_sections": 268, "scenes": 17, ...}
+```
+
+### validate — 完整性验证
+
+```
+aup2 validate <file> [-e ENC] [--quiet]
+```
+
+| 选项 | 说明 |
+|---|---|
+| `file` | 必填，AUP2 文件路径 |
+| `--quiet` | 不输出错误信息，仅通过退出码区分结果 |
+
+退出码：`0` = 有效，`1` = 无效（含解析失败或结构错误）。错误信息输出到 stderr。
+
+```bash
+aup2 validate project.aup2 && echo "有效"
+aup2 validate broken.aup2 --quiet || echo "损坏"
+```
+
+### convert — 格式互转
+
+```
+aup2 convert <input> <output> [-e ENC]
+```
+
+根据扩展名自动判断转换方向：
+
+| 输入 | 输出 | 方向 |
+|---|---|---|
+| `.aup2` | `.json` | AUP2 → JSON |
+| `.json` | `.aup2` | JSON → AUP2 |
+| `.aup2` | `.aup2` | 重建（逻辑重建，非字节精确） |
+
+```bash
+# AUP2 → JSON
+aup2 convert project.aup2 project.json
+
+# JSON → AUP2
+aup2 convert project.json rebuilt.aup2
+```
+
+**注意**：JSON → AUP2 为逻辑重建（结构正确但数值格式可能略有差异）。如需字节精确往返，使用 `save_parsed_data(include_records=True)` + `load_state()` Python API。
+
+### rebuild — 往返验证
+
+```
+aup2 rebuild <file> [-e ENC] [-o OUTPUT]
+```
+
+解析 → 重建，对比原始文件与重建文件的 SHA256。输出对比结果到 stdout。
+
+| 选项 | 说明 |
+|---|---|
+| `file` | 必填，AUP2 文件路径 |
+| `-o, --output` | 将重建结果写入指定文件 |
+
+```bash
+aup2 rebuild project.aup2
+# Original file:   project.aup2
+# Original SHA256: 499a52c2...
+# Rebuilt  SHA256: 499a52c2...
+# Round-trip:      YES
+
+# 写入重建文件
+aup2 rebuild project.aup2 -o verified.aup2
+```
+
+### 公共选项与退出码
+
+- **`-e, --encoding`**：所有子命令均支持，指定文件编码（默认 `utf-8`）.
+- **退出码**：`0` = 成功，`1` = 解析/验证/重建失败或文件未找到，`2` = 参数错误.
+
+### 模块调用
+
+未安装时可直接通过 Python 运行：
+
+```bash
+python main.py parse project.aup2
+python -m aviutl2_aup2_parser info project.aup2
+```
 ## 快速开始
 
 ```python
@@ -241,6 +441,12 @@ parser = AUP2Parser.from_file("file.aup2", encoding="shift_jis")
 MIT License
 
 ## 更新日志
+
+### v1.3.0
+- 新增：CLI 命令行工具 — `parse`、`info`、`validate`、`convert`、`rebuild` 五个子命令
+- 新增：`python main.py` 和 `python -m aviutl2_aup2_parser` 两种入口方式
+- 新增：`pyproject.toml` 注册 `aup2` 命令入口点
+- 新增：`__main__.py` 模块入口
 
 ### v1.2.0
 - 新增：往返状态持久化 — `to_dict(include_records=True)` / `from_state()` / `load_state()`

@@ -1,7 +1,10 @@
 [project]
 name = "aviutl2-aup2-parser"
-version = "0.1.0"
-description = "Add your description here"
+version = "1.2.0"
+description = "Parse, validate, convert, and rebuild AviUtl AUP2 project files — zero external dependencies."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
+
+[project.scripts]
+aup2 = "aviutl2_aup2_parser.main:main"
