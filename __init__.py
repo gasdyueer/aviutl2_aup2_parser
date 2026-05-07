@@ -21,7 +21,9 @@ from .aup2_parser import (
     parse_aviutl_aup2_to_dict,
     parse_aup2_file,
     reconstruct_aup2_dict,
-    validate_aup2_file
+    validate_aup2_file,
+    save_aup2_state,
+    load_aup2_state,
 )
 
 __version__ = "1.0.0"

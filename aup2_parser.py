@@ -61,6 +61,10 @@ class AUP2Parser:
             raise AUP2ParseError("AUP2内容不能为空")
 
         self.aup2_content = aup2_content
+        self._init_fields()
+
+    def _init_fields(self) -> None:
+        """初始化所有实例字段为默认值。"""
         self.data = defaultdict(dict)
         self.current_section = None
         self.current_subsection = None
@@ -261,7 +265,11 @@ class AUP2Parser:
                 self._line_ending = '\n'
             # Track whether original content had trailing newline
             self._trailing_newline = content.endswith('\n') or content.endswith('\r')
-            lines = content.strip().split('\n')
+            # 使用检测到的换行符分割，避免 content.strip() 丢弃前导空行
+            lines = content.split(self._line_ending)
+            # 移除末尾分隔符产生的空串
+            if lines and lines[-1] == '':
+                lines.pop()
 
             for self.line_number, line in enumerate(lines, 1):
                 line = line.strip()
@@ -556,20 +564,49 @@ class AUP2Parser:
         except Exception as e:
             raise AUP2ReconstructionError(f"保存失败: {e}") from e
 
-    def save_parsed_data(self, filepath: Union[str, Path], encoding: str = 'utf-8') -> None:
+    def to_dict(self, include_records: bool = False) -> Dict[str, Any]:
+        """将解析器完整状态导出为字典。
+
+        Args:
+            include_records: 是否包含 _line_records 以实现字节级往返。
+
+        Returns:
+            包含 data、换行信息、可选行记录的完整状态字典。
+        """
+        state: Dict[str, Any] = {
+            "data": dict(self.data),
+            "_line_ending": self._line_ending,
+            "_trailing_newline": self._trailing_newline,
+        }
+        if include_records and self._line_records:
+            state["_line_records"] = [
+                {
+                    "type": r.type,
+                    "path": list(r.path),
+                    "key": r.key,
+                    "parsed": r.parsed,
+                    "raw": r.raw,
+                }
+                for r in self._line_records
+            ]
+        return state
+    def save_parsed_data(self, filepath: Union[str, Path], encoding: str = 'utf-8',
+                         include_records: bool = False) -> None:
         """
         将解析后的数据保存为JSON文件。
 
         Args:
             filepath (Union[str, Path]): JSON输出文件路径
             encoding (str): 文件编码
+            include_records: 是否包含 _line_records 以实现字节级往返
         """
         try:
             filepath = Path(filepath)
             filepath.parent.mkdir(parents=True, exist_ok=True)
 
+            state = self.to_dict(include_records=include_records)
             with open(filepath, 'w', encoding=encoding) as f:
-                json.dump(dict(self.data), f, indent=2, ensure_ascii=False)
+                json.dump(state, f, indent=2, ensure_ascii=False)
         except Exception as e:
             raise AUP2ParseError(f"保存解析数据失败: {e}") from e
 
@@ -619,8 +656,9 @@ class AUP2Parser:
         if not isinstance(parsed_data, dict):
             raise AUP2ReconstructionError("输入数据必须是字典类型")
 
-        # 使用临时实例进行重建（修复空内容问题）
-        temp_parser = cls("dummy")  # 使用非空内容初始化
+        temp_parser = cls.__new__(cls)
+        temp_parser.aup2_content = None
+        temp_parser._init_fields()
         temp_parser.data = defaultdict(dict, parsed_data)
         return temp_parser.reconstruct()
 
@@ -652,6 +690,56 @@ class AUP2Parser:
             return cls.reconstruct_from_dict(parsed_data)
         except json.JSONDecodeError as e:
             raise AUP2ParseError(f"JSON解析失败: {e}") from e
+
+    @classmethod
+    def from_state(cls, state: Dict[str, Any]) -> 'AUP2Parser':
+        """从完整状态字典恢复解析器实例（含 _line_records 以支持字节级往返）。
+
+        Args:
+            state: to_dict(include_records=True) 产出的完整状态字典。
+
+        Returns:
+            已恢复状态的 AUP2Parser 实例，可直接调用 reconstruct()。
+        """
+        parser = cls.__new__(cls)
+        parser.aup2_content = None
+        parser._init_fields()
+
+        data = state.get("data", {})
+        parser.data = defaultdict(dict)
+        parser.data.update(data)
+
+        records_data = state.get("_line_records", [])
+        parser._line_records = [
+            LineRecord(
+                type=r["type"],
+                path=tuple(r["path"]),
+                key=r.get("key"),
+                parsed=r.get("parsed"),
+                raw=r["raw"],
+            )
+            for r in records_data
+        ]
+
+        parser._line_ending = state.get("_line_ending", "\n")
+        parser._trailing_newline = state.get("_trailing_newline", True)
+        return parser
+
+    @classmethod
+    def load_state(cls, filepath: Union[str, Path], encoding: str = 'utf-8') -> 'AUP2Parser':
+        """从 JSON 文件加载完整解析器状态。
+
+        Args:
+            filepath: 由 save_parsed_data(include_records=True) 或
+                      save_state() 写入的 JSON 文件路径。
+            encoding: 文件编码。
+
+        Returns:
+            已恢复状态的 AUP2Parser 实例。
+        """
+        with open(filepath, 'r', encoding=encoding) as f:
+            state = json.load(f)
+        return cls.from_state(state)
 
     @classmethod
     def save_reconstructed_aup2(cls, json_filepath: Union[str, Path],
@@ -793,6 +881,33 @@ def validate_aup2_file(filepath: Union[str, Path], encoding: str = 'utf-8') -> T
     except Exception as e:
         return False, [f"解析失败: {e}"]
 
+
+def save_aup2_state(filepath: Union[str, Path],
+                    output_filepath: Union[str, Path],
+                    encoding: str = 'utf-8') -> None:
+    """解析AUP2文件并将完整状态（含行记录）保存为JSON。
+
+    Args:
+        filepath: AUP2文件路径
+        output_filepath: JSON输出文件路径
+        encoding: 文件编码
+    """
+    parser = AUP2Parser.from_file(filepath, encoding)
+    parser.parse()
+    parser.save_parsed_data(output_filepath, encoding, include_records=True)
+
+
+def load_aup2_state(filepath: Union[str, Path], encoding: str = 'utf-8') -> AUP2Parser:
+    """从完整状态JSON文件加载AUP2Parser实例（支持字节级往返重建）。
+
+    Args:
+        filepath: JSON文件路径
+        encoding: 文件编码
+
+    Returns:
+        已恢复状态的AUP2Parser实例
+    """
+    return AUP2Parser.load_state(filepath, encoding)
 
 # 示例用法
 if __name__ == "__main__":
