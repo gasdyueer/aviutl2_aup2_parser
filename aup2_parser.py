@@ -1,6 +1,6 @@
 import re
 import json
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 from typing import Dict, List, Any, Optional, Union, Tuple
 from pathlib import Path
 
@@ -20,6 +20,14 @@ class AUP2ReconstructionError(AUP2ParseError):
     """AUP2文件重建错误"""
     pass
 
+
+# 行记录用于忠实往返重建
+LineRecord = namedtuple('LineRecord', ['type', 'path', 'key', 'parsed', 'raw'])
+# type: 'section' | 'kv'
+# path: tuple of keys to navigate self.data to the section (e.g. ('project',), ('object.0','effects','effect.0'))
+# key: property key (None for 'section')
+# parsed: parsed value (None for 'section')
+# raw: original line text
 
 class AUP2Parser:
     """
@@ -58,12 +66,18 @@ class AUP2Parser:
         self.current_subsection = None
         self.line_number = 0
         self.warnings: List[str] = []
-
+        self._line_records: List[LineRecord] = []
+        self._current_path: Optional[Tuple[str, ...]] = None
+        self._line_ending: str = '\n'
+        self._trailing_newline: bool = True
     def _reset_state(self) -> None:
         """重置当前状态。"""
         self.current_section = None
         self.current_subsection = None
         self.line_number = 0
+        self._current_path = None
+        self._line_records = []
+        self._trailing_newline = True
 
     def _parse_value(self, value: str) -> Union[int, float, List[Union[int, float]], str]:
         """
@@ -147,9 +161,19 @@ class AUP2Parser:
             self.data[current_section_name] = {}
             self.current_section = self.data[current_section_name]
             self.current_subsection = None
+            self._current_path = (current_section_name,)
+            self._line_records.append(LineRecord('section', self._current_path, None, None, line))
         else:
-            self.warnings.append(f"行 {self.line_number}: 无法识别的区块: {line}")
-
+            # Unknown section type — preserve as generic section for round-trip
+            inner = line[1:-1].strip()
+            if inner:
+                self.data[inner] = {}
+                self.current_section = self.data[inner]
+                self.current_subsection = None
+                self._current_path = (inner,)
+                self._line_records.append(LineRecord('section', self._current_path, None, None, line))
+            else:
+                self.warnings.append(f"行 {self.line_number}: 无法识别的区块: {line}")
     def _parse_subsection(self, line: str) -> None:
         """
         解析子区块（效果区块）（增强版）。
@@ -181,6 +205,8 @@ class AUP2Parser:
             self.data[obj_section_name]['effects'][effect_section_name] = {}
             self.current_subsection = self.data[obj_section_name]['effects'][effect_section_name]
             self.current_section = None
+            self._current_path = (obj_section_name, 'effects', effect_section_name)
+            self._line_records.append(LineRecord('section', self._current_path, None, None, line))
         else:
             self.warnings.append(f"行 {self.line_number}: 无法识别的子区块: {line}")
 
@@ -203,10 +229,15 @@ class AUP2Parser:
                     self.current_section[key] = parsed_value
                 else:
                     self.warnings.append(f"行 {self.line_number}: 键值对在无效位置被忽略: {line}")
+
+                # 记录原始行用于往返重建
+                self._line_records.append(LineRecord('kv', self._current_path, key, parsed_value, line))
             except ValueError as e:
                 self.warnings.append(f"行 {self.line_number}: 解析键值对失败: {line} - {e}")
+                self._line_records.append(LineRecord('kv', self._current_path, line, None, line))
         else:
             self.warnings.append(f"行 {self.line_number}: 发现不包含等号的行: {line}")
+            self._line_records.append(LineRecord('kv', self._current_path, line, None, line))
 
     def parse(self) -> Dict[str, Any]:
         """
@@ -220,7 +251,17 @@ class AUP2Parser:
         """
         try:
             self._reset_state()
-            lines = self.aup2_content.strip().split('\n')
+            # Detect line ending for exact round-trip
+            content = self.aup2_content
+            if '\r\n' in content:
+                self._line_ending = '\r\n'
+            elif '\r' in content:
+                self._line_ending = '\r'
+            else:
+                self._line_ending = '\n'
+            # Track whether original content had trailing newline
+            self._trailing_newline = content.endswith('\n') or content.endswith('\r')
+            lines = content.strip().split('\n')
 
             for self.line_number, line in enumerate(lines, 1):
                 line = line.strip()
@@ -343,67 +384,93 @@ class AUP2Parser:
             if not self.data:
                 self.parse()
 
-            # 验证数据结构
+            # 验证数据结构 (skip for exact round-trip since line records guarantee structure)
             clean_data = dict(self.data)
             if '_metadata' in clean_data:
                 del clean_data['_metadata']
 
-            errors = self.validate_data_structure(clean_data)
-            if errors:
-                raise AUP2ReconstructionError(f"数据结构验证失败: {'; '.join(errors)}")
+            if not self._line_records:
+                errors = self.validate_data_structure(clean_data)
+                if errors:
+                    raise AUP2ReconstructionError(f"数据结构验证失败: {'; '.join(errors)}")
 
             aup2_lines = []
             parsed_data = clean_data
 
             # 生成 AUP2 行
             self._build_aup2_lines(aup2_lines, parsed_data)
-            return "\n".join(aup2_lines)
+            result = self._line_ending.join(aup2_lines)
+            if self._trailing_newline:
+                result += self._line_ending
+            return result
 
         except Exception as e:
             raise AUP2ReconstructionError(f"重建失败: {e}") from e
 
     def _build_aup2_lines(self, aup2_lines, parsed_data):
+        """Build AUP2 lines from parsed data.
+        
+        Uses original line records for exact round-trip when available.
+        Falls back to logical reconstruction when reconstructing from dict/JSON.
         """
-        根据解析后的数据构建AUP2行列表。
+        if self._line_records:
+            self._build_aup2_lines_from_records(aup2_lines)
+        else:
+            self._build_aup2_lines_legacy(aup2_lines, parsed_data)
 
-        输出结构按以下层次顺序：
-        [project]
-            全局属性
-        [scene.X]  (按场景ID排序)
-            场景属性
-            [Y]  (场景内对象按对象ID排序)
-                layer, frame, focus 等标准属性
-                其他对象属性 (包括scene等)
-                [Y.Z]  (对象效果按效果ID排序)
-                    效果属性
+    def _build_aup2_lines_from_records(self, aup2_lines):
+        """Reconstruct AUP2 output from original line records for exact round-trip."""
+        for record in self._line_records:
+            if record.type == 'section':
+                aup2_lines.append(record.raw)
+            elif record.type == 'kv':
+                # Navigate to current value in self.data
+                section = self.data
+                try:
+                    for part in record.path:
+                        section = section[part]
+                    current_value = section.get(record.key)
+                except (KeyError, TypeError):
+                    current_value = None
+                
+                if record.parsed is None:
+                    # Value was not parseable, preserve original raw text
+                    aup2_lines.append(record.raw)
+                elif current_value is not None and current_value != record.parsed:
+                    # Value was modified, format with converter
+                    aup2_lines.append("{}={}".format(record.key,
+                        self._convert_value_to_aup2_string(current_value)))
+                else:
+                    # Value unchanged, use original text for exact reproduction
+                    aup2_lines.append(record.raw)
 
-        注意：
-        - 对象通过其scene属性匹配到对应场景 (默认为scene=0)
-        - 效果按对象ID.效果ID的格式输出
-        - 场景相关属性从project区块移动到scene区块
+    def _build_aup2_lines_legacy(self, aup2_lines, parsed_data):
+        """Legacy logical reconstruction used when no line records available.
+        
+        Rebuilds AUP2 structure from the flat parsed data dictionary.
+        Sections are sorted by type then ID; values use canonical formatting.
         """
-        # 按照结构顺序重建AUP2内容
-
-        # 1. 处理 [project] 区块，移除场景相关的参数
+        # 1. [project] block — output all properties as-is
         if "project" in parsed_data:
             aup2_lines.append("[project]")
-            project_data = parsed_data["project"]
-            # 移除所有场景相关的参数，这些应该在scene块中
-            for key, value in project_data.items():
-                if not any(key.startswith(prefix) for prefix in ['scene=', 'name=', 'video.', 'audio.', 'cursor.', 'display.']):
-                    aup2_lines.append("{}={}".format(key, self._convert_value_to_aup2_string(value)))
+            for key, value in parsed_data["project"].items():
+                aup2_lines.append("{}={}".format(key, self._convert_value_to_aup2_string(value)))
 
-        # 2. 处理 [scene.X] 区块及其所属对象 (场景按ID排序)
-        scene_keys = sorted([k for k in parsed_data if k.startswith("scene.")])
+        # 2. [scene.X] blocks sorted numerically by scene ID
+        def _scene_sort_key(k):
+            return int(k.split('.')[1])
+        scene_keys = sorted(
+            [k for k in parsed_data if k.startswith("scene.")],
+            key=_scene_sort_key
+        )
         for scene_key in scene_keys:
             aup2_lines.append("[{}]".format(scene_key))
             for key, value in parsed_data[scene_key].items():
                 aup2_lines.append("{}={}".format(key, self._convert_value_to_aup2_string(value)))
 
-            # 提取场景ID
             scene_id = int(scene_key.split('.')[1])
 
-            # 获取本场景的所有对象，按对象ID排序
+            # Find objects belonging to this scene
             scene_objects = []
             for obj_key in [k for k in parsed_data if k.startswith("object.")]:
                 obj_id = int(obj_key.split('.')[1])
@@ -412,29 +479,28 @@ class AUP2Parser:
                 if obj_scene == scene_id:
                     scene_objects.append((obj_id, obj_key, obj_data))
 
-            # 按对象ID排序输出对象 (场景内)
             for obj_id, obj_key, obj_data in sorted(scene_objects):
                 aup2_lines.append("[{}]".format(obj_id))
-                # 先写入图层对象本身的属性 (layer, frame, focus)
                 for key in ["layer", "frame", "focus"]:
                     if key in obj_data:
-                        aup2_lines.append("{}={}".format(key, self._convert_value_to_aup2_string(obj_data[key])))
-
-                # 写入其他可能存在的对象属性 (scene等)
+                        aup2_lines.append("{}={}".format(key,
+                            self._convert_value_to_aup2_string(obj_data[key])))
                 for key, value in obj_data.items():
                     if key not in ["layer", "frame", "focus", "effects"]:
-                        aup2_lines.append("{}={}".format(key, self._convert_value_to_aup2_string(value)))
+                        aup2_lines.append("{}={}".format(key,
+                            self._convert_value_to_aup2_string(value)))
 
-                # 处理效果 (按效果ID排序)
                 if "effects" in obj_data:
-                    effect_ids = sorted([int(k.split('.')[1]) for k in obj_data["effects"]])
+                    effect_ids = sorted(
+                        [int(k.split('.')[1]) for k in obj_data["effects"]]
+                    )
                     for effect_id in effect_ids:
                         effect_key = "effect.{}".format(effect_id)
                         effect_data = obj_data["effects"][effect_key]
-
                         aup2_lines.append("[{}.{}]".format(obj_id, effect_id))
                         for key, value in effect_data.items():
-                            aup2_lines.append("{}={}".format(key, self._convert_value_to_aup2_string(value)))
+                            aup2_lines.append("{}={}".format(key,
+                                self._convert_value_to_aup2_string(value)))
 
     @classmethod
     def from_file(cls, filepath: Union[str, Path], encoding: str = 'utf-8') -> 'AUP2Parser':
@@ -454,12 +520,20 @@ class AUP2Parser:
         """
         filepath = Path(filepath)
         try:
-            with open(filepath, 'r', encoding=encoding) as f:
-                content = f.read()
+            # Read as binary first to detect line endings for exact round-trip
+            with open(filepath, 'rb') as f:
+                raw_bytes = f.read()
+            content = raw_bytes.decode(encoding)
         except UnicodeDecodeError as e:
             raise AUP2ParseError(f"文件编码错误: {e}") from e
 
-        return cls(content)
+        parser = cls(content)
+        # Pass line ending info to parser for exact round-trip
+        if b'\r\n' in raw_bytes:
+            parser._line_ending = '\r\n'
+        elif b'\r' in raw_bytes:
+            parser._line_ending = '\r'
+        return parser
 
     def save_to_file(self, filepath: Union[str, Path], encoding: str = 'utf-8') -> None:
         """
@@ -477,7 +551,7 @@ class AUP2Parser:
             filepath = Path(filepath)
             filepath.parent.mkdir(parents=True, exist_ok=True)
 
-            with open(filepath, 'w', encoding=encoding) as f:
+            with open(filepath, 'w', encoding=encoding, newline='') as f:
                 f.write(reconstructed_content)
         except Exception as e:
             raise AUP2ReconstructionError(f"保存失败: {e}") from e

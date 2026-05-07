@@ -51,7 +51,7 @@ param1=100
     # 3. 读取文件（如果有实际文件）
     print("3. 读取AUP2文件:")
     # 假设有一个test.aup2文件
-    test_file = Path("test.aup2")
+    test_file = Path("tests/fixtures/test.aup2")
     if test_file.exists():
         file_data = parse_file(str(test_file))
         print("从文件 parse() 成功！")

@@ -8,3 +8,14 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Generated JSON exports
+*.json
+
+# User project files (large, personal)
+simple.aup2
+complex.aup2
+
+# Temp / reconstructed artifacts
+*_reconstructed.aup2
+_test_*.py

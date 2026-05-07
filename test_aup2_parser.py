@@ -10,7 +10,7 @@ from aup2_parser import AUP2Parser
 
 def main():
     # 指定测试AUP2文件的路径（相对于当前脚本位置）
-    test_aup2_path = Path(__file__).parent / "test.aup2"
+    test_aup2_path = Path(__file__).parent / "tests" / "fixtures" / "test.aup2"
     test_aup2_path = test_aup2_path.resolve()  # 转换为绝对路径
 
     print(f"测试AUP2文件路径: {test_aup2_path}")
