@@ -16,6 +16,8 @@ wheels/
 simple.aup2
 complex.aup2
 
-# Temp / reconstructed artifacts
+# Temp / reconstructed / converted artifacts
 *_reconstructed.aup2
+*_rebuilt_*.aup2
+*_converted.aup2
 _test_*.py

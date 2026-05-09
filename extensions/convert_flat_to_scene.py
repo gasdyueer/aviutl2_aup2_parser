@@ -7,7 +7,7 @@ Output: 1+N scenes, 3N objects:
   - scene.1..N (sub-scenes): N objects — 1 動画ファイル object each
 
 Usage:
-  python extensions/convert_flat_to_scene.py test2.aup2 -o output.aup2
+  python extensions/convert_flat_to_scene.py tests/fixtures/test2.aup2 -o output.aup2
 """
 
 import sys

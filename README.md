@@ -411,7 +411,7 @@ reconstructed = parser.reconstruct()  # layer=5 变成 layer=10，其余不变
 
 ```bash
 # 示例：扁平 AUP2 → 场景引用 + 分层架构
-python extensions/convert_flat_to_scene.py test2.aup2 -o output.aup2
+python extensions/convert_flat_to_scene.py tests/fixtures/test2.aup2 -o output.aup2
 ```
 ## 项目结构
 
@@ -428,7 +428,10 @@ aviutl2_aup2_parser/
 ├── extensions/              # 扩展脚本（详见 extensions/README.md）
 │   ├── README.md
 │   └── convert_flat_to_scene.py
-├── test.aup2                # 测试文件（173 行）
+├── tests/
+│   └── fixtures/
+│       ├── test.aup2          # 基本测试（173 行）
+│       └── test2.aup2         # 扩展测试（8 段，30fps）
 ├── simple.aup2              # 中等复杂度（2244 行，4 场景，94 对象）
 └── complex.aup2             # 复杂项目（8609 行，17 场景，247 对象）
 ```

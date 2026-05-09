@@ -47,7 +47,7 @@ result = parser.reconstruct()
 ### convert_flat_to_scene.py
 
 ```bash
-python extensions/convert_flat_to_scene.py test2.aup2 -o output.aup2
+python extensions/convert_flat_to_scene.py tests/fixtures/test2.aup2 -o output.aup2
 ```
 
 **变换规则**（对每个输入片段，共 N 个）：
